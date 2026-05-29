@@ -1,6 +1,4 @@
 import json
-from collections import defaultdict
-from statistics import median
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -16,143 +14,78 @@ from telegram.ext import (
 TOKEN = "8824897435:AAHYNuoRRTqr0zgavzXIv_oipj8MhL2Lr_s"
 
 # =========================
-# LOAD DATASET
+# LOAD RANGE DATASET
 # =========================
-with open("telegram_cleaned_dataset.json", "r", encoding="utf-8") as f:
+with open("telegram_ranges_dataset.json", "r", encoding="utf-8") as f:
     DATA = json.load(f)
 
 # =========================
-# BUILD MONTH CLUSTERS
-# =========================
-MONTH_CLUSTERS = defaultdict(list)
-
-for item in DATA:
-    try:
-        uid = int(item["id"])
-        month = item["month"]
-        MONTH_CLUSTERS[month].append(uid)
-    except:
-        pass
-
-# =========================
-# REMOVE OUTLIERS
-# =========================
-def remove_outliers(ids):
-
-    if len(ids) < 4:
-        return ids
-
-    ids = sorted(ids)
-
-    q1 = ids[len(ids)//4]
-    q3 = ids[(len(ids)*3)//4]
-
-    iqr = q3 - q1
-
-    low = q1 - (1.5 * iqr)
-    high = q3 + (1.5 * iqr)
-
-    filtered = [
-        x for x in ids
-        if low <= x <= high
-    ]
-
-    return filtered if filtered else ids
-
-# =========================
-# CALCULATE MONTH STATS
-# =========================
-MONTH_STATS = {}
-
-for month, ids in MONTH_CLUSTERS.items():
-
-    ids = remove_outliers(ids)
-
-    ids.sort()
-
-    MONTH_STATS[month] = {
-        "min": min(ids),
-        "max": max(ids),
-        "median": median(ids),
-        "count": len(ids)
-    }
-
-# =========================
-# SORT MONTHS
-# =========================
-SORTED_MONTHS = sorted(MONTH_STATS.keys())
-
-# =========================
-# SMART PREDICTION
+# SMART MONTH PREDICTION
 # =========================
 def predict_month(user_id):
 
     user_id = int(user_id)
 
-    # build sorted points
-    points = []
+    best_month = None
+    best_score = float("inf")
 
-    for month, stats in MONTH_STATS.items():
+    for item in DATA:
 
-        points.append({
-            "month": month,
-            "min": stats["min"],
-            "max": stats["max"],
-            "median": stats["median"]
-        })
+        month = item["month"]
 
-    # sort by median id
-    points.sort(key=lambda x: x["median"])
+        min_id = item["min"]
+        max_id = item["max"]
+        center = item["center"]
+        count = item["count"]
 
-    best = None
-    best_distance = float("inf")
+        # =========================
+        # INSIDE RANGE
+        # =========================
+        if min_id <= user_id <= max_id:
 
-    # nearest median search
-    for point in points:
+            # distance from center
+            center_distance = abs(user_id - center)
 
-        dist = abs(user_id - point["median"])
+            # strong bonus for being inside
+            score = center_distance * 0.35
 
-        if dist < best_distance:
+        else:
 
-            best_distance = dist
-            best = point
-
-    # refinement:
-    # if inside another month range -> prioritize it
-
-    inside_candidates = []
-
-    for point in points:
-
-        if point["min"] <= user_id <= point["max"]:
-
-            range_center = (
-                point["min"] +
-                point["max"]
-            ) / 2
-
-            dist = abs(user_id - range_center)
-
-            inside_candidates.append(
-                (dist, point)
+            # distance from nearest edge
+            edge_distance = min(
+                abs(user_id - min_id),
+                abs(user_id - max_id)
             )
 
-    if inside_candidates:
+            center_distance = abs(user_id - center)
 
-        inside_candidates.sort(
-            key=lambda x: x[0]
-        )
+            score = (
+                edge_distance * 1.0 +
+                center_distance * 0.15
+            )
 
-        best = inside_candidates[0][1]
+        # =========================
+        # DENSITY BONUS
+        # =========================
+        score /= (1 + count * 0.03)
 
-    return best["month"]
+        # =========================
+        # BEST MATCH
+        # =========================
+        if score < best_score:
+
+            best_score = score
+            best_month = month
+
+    return best_month
+
 # =========================
-# START
+# START COMMAND
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
-        "Send Telegram IDs separated by spaces or lines.\n\n"
+        "1Send Telegram IDs separated by spaces or lines.\n\n"
         "Example:\n"
         "8374818286\n"
         "7019795401\n"
@@ -189,9 +122,9 @@ async def handle_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             results.append(f"{uid} -> Error")
 
-    await update.message.reply_text(
-        "\n".join(results)
-    )
+    final_text = "\n".join(results)
+
+    await update.message.reply_text(final_text)
 
 # =========================
 # MAIN
