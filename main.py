@@ -1,5 +1,6 @@
 import json
 from collections import defaultdict
+from statistics import median
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -26,7 +27,37 @@ with open("telegram_cleaned_dataset.json", "r", encoding="utf-8") as f:
 MONTH_CLUSTERS = defaultdict(list)
 
 for item in DATA:
-    MONTH_CLUSTERS[item["month"]].append(int(item["id"]))
+    try:
+        uid = int(item["id"])
+        month = item["month"]
+        MONTH_CLUSTERS[month].append(uid)
+    except:
+        pass
+
+# =========================
+# REMOVE OUTLIERS
+# =========================
+def remove_outliers(ids):
+
+    if len(ids) < 4:
+        return ids
+
+    ids = sorted(ids)
+
+    q1 = ids[len(ids)//4]
+    q3 = ids[(len(ids)*3)//4]
+
+    iqr = q3 - q1
+
+    low = q1 - (1.5 * iqr)
+    high = q3 + (1.5 * iqr)
+
+    filtered = [
+        x for x in ids
+        if low <= x <= high
+    ]
+
+    return filtered if filtered else ids
 
 # =========================
 # CALCULATE MONTH STATS
@@ -35,22 +66,24 @@ MONTH_STATS = {}
 
 for month, ids in MONTH_CLUSTERS.items():
 
+    ids = remove_outliers(ids)
+
     ids.sort()
 
-    avg_id = sum(ids) / len(ids)
-
-    min_id = min(ids)
-    max_id = max(ids)
-
     MONTH_STATS[month] = {
-        "avg": avg_id,
-        "min": min_id,
-        "max": max_id,
+        "min": min(ids),
+        "max": max(ids),
+        "median": median(ids),
         "count": len(ids)
     }
 
 # =========================
-# SMART MONTH PREDICTION
+# SORT MONTHS
+# =========================
+SORTED_MONTHS = sorted(MONTH_STATS.keys())
+
+# =========================
+# SMART PREDICTION
 # =========================
 def predict_month(user_id):
 
@@ -59,34 +92,38 @@ def predict_month(user_id):
     best_month = None
     best_score = float("inf")
 
-    for month, stats in MONTH_STATS.items():
+    for month in SORTED_MONTHS:
 
-        avg_id = stats["avg"]
+        stats = MONTH_STATS[month]
+
         min_id = stats["min"]
         max_id = stats["max"]
+        med = stats["median"]
         count = stats["count"]
 
-        # Distance from average
-        avg_distance = abs(user_id - avg_id)
+        # inside month range
+        if min_id <= user_id <= max_id:
 
-        # Distance from range
-        if user_id < min_id:
-            range_distance = min_id - user_id
+            center_distance = abs(user_id - med)
 
-        elif user_id > max_id:
-            range_distance = user_id - max_id
+            score = center_distance * 0.4
 
         else:
-            range_distance = 0
 
-        # Smart score
-        score = (
-            avg_distance * 0.7
-            + range_distance * 1.3
-        )
+            if user_id < min_id:
+                edge_distance = min_id - user_id
+            else:
+                edge_distance = user_id - max_id
 
-        # Bonus for dense clusters
-        score /= (1 + (count * 0.05))
+            center_distance = abs(user_id - med)
+
+            score = (
+                edge_distance * 1.2 +
+                center_distance * 0.3
+            )
+
+        # dense month bonus
+        score /= (1 + count * 0.08)
 
         if score < best_score:
             best_score = score
@@ -95,7 +132,7 @@ def predict_month(user_id):
     return best_month
 
 # =========================
-# START COMMAND
+# START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -123,6 +160,7 @@ async def handle_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for uid in ids:
 
         if not uid.isdigit():
+
             results.append(f"{uid} -> Invalid ID")
             continue
 
@@ -132,13 +170,13 @@ async def handle_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             results.append(f"{uid} → {result}")
 
-        except Exception:
+        except Exception as e:
 
             results.append(f"{uid} -> Error")
 
-    final_text = "\n".join(results)
-
-    await update.message.reply_text(final_text)
+    await update.message.reply_text(
+        "\n".join(results)
+    )
 
 # =========================
 # MAIN
@@ -147,7 +185,9 @@ def main():
 
     app = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
+    app.add_handler(
+        CommandHandler("start", start)
+    )
 
     app.add_handler(
         MessageHandler(
