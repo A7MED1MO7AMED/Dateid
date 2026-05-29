@@ -1,5 +1,5 @@
 import json
-from bisect import bisect_left
+from collections import defaultdict
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -9,60 +9,96 @@ from telegram.ext import (
     filters
 )
 
-# ====== BOT TOKEN ======
+# =========================
+# BOT TOKEN
+# =========================
 TOKEN = "8824897435:AAHYNuoRRTqr0zgavzXIv_oipj8MhL2Lr_s"
 
-# ====== LOAD DATASET ======
+# =========================
+# LOAD DATASET
+# =========================
 with open("telegram_cleaned_dataset.json", "r", encoding="utf-8") as f:
     DATA = json.load(f)
 
-# Sort dataset by ID
-DATA.sort(key=lambda x: int(x["id"]))
+# =========================
+# BUILD MONTH CLUSTERS
+# =========================
+MONTH_CLUSTERS = defaultdict(list)
 
-IDS = [int(x["id"]) for x in DATA]
+for item in DATA:
+    MONTH_CLUSTERS[item["month"]].append(int(item["id"]))
 
+# =========================
+# CALCULATE MONTH STATS
+# =========================
+MONTH_STATS = {}
 
-# ====== SMART PREDICTION ======
-def predict_date(user_id, neighbors=6):
+for month, ids in MONTH_CLUSTERS.items():
+
+    ids.sort()
+
+    avg_id = sum(ids) / len(ids)
+
+    min_id = min(ids)
+    max_id = max(ids)
+
+    MONTH_STATS[month] = {
+        "avg": avg_id,
+        "min": min_id,
+        "max": max_id,
+        "count": len(ids)
+    }
+
+# =========================
+# SMART MONTH PREDICTION
+# =========================
+def predict_month(user_id):
+
     user_id = int(user_id)
 
-    pos = bisect_left(IDS, user_id)
+    best_month = None
+    best_score = float("inf")
 
-    nearby = []
+    for month, stats in MONTH_STATS.items():
 
-    start = max(0, pos - neighbors)
-    end = min(len(DATA), pos + neighbors)
+        avg_id = stats["avg"]
+        min_id = stats["min"]
+        max_id = stats["max"]
+        count = stats["count"]
 
-    for i in range(start, end):
-        item = DATA[i]
+        # Distance from average
+        avg_distance = abs(user_id - avg_id)
 
-        anchor_id = int(item["id"])
-        distance = abs(user_id - anchor_id)
+        # Distance from range
+        if user_id < min_id:
+            range_distance = min_id - user_id
 
-        nearby.append({
-            "month": item["month"],
-            "distance": distance
-        })
+        elif user_id > max_id:
+            range_distance = user_id - max_id
 
-    scores = {}
+        else:
+            range_distance = 0
 
-    for item in nearby:
-        month = item["month"]
+        # Smart score
+        score = (
+            avg_distance * 0.7
+            + range_distance * 1.3
+        )
 
-        # +1 عشان منع division by zero
-        distance = item["distance"] + 1
+        # Bonus for dense clusters
+        score /= (1 + (count * 0.05))
 
-        weight = 1 / distance
-
-        scores[month] = scores.get(month, 0) + weight
-
-    best_month = max(scores, key=scores.get)
+        if score < best_score:
+            best_score = score
+            best_month = month
 
     return best_month
 
-
-# ====== START COMMAND ======
+# =========================
+# START COMMAND
+# =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     text = (
         "Send Telegram IDs separated by spaces or lines.\n\n"
         "Example:\n"
@@ -73,38 +109,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text)
 
-
-# ====== HANDLE IDS ======
+# =========================
+# HANDLE IDS
+# =========================
 async def handle_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     raw_text = update.message.text
 
-    # Split by spaces/newlines
     ids = raw_text.split()
 
     results = []
 
     for uid in ids:
 
-        # Validate
         if not uid.isdigit():
             results.append(f"{uid} -> Invalid ID")
             continue
 
         try:
-            predicted = predict_date(uid)
 
-            results.append(f"{uid} → {predicted}")
+            result = predict_month(uid)
+
+            results.append(f"{uid} → {result}")
 
         except Exception:
+
             results.append(f"{uid} -> Error")
 
     final_text = "\n".join(results)
 
     await update.message.reply_text(final_text)
 
-
-# ====== MAIN ======
+# =========================
+# MAIN
+# =========================
 def main():
 
     app = ApplicationBuilder().token(TOKEN).build()
@@ -112,13 +150,15 @@ def main():
     app.add_handler(CommandHandler("start", start))
 
     app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ids)
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_ids
+        )
     )
 
-    print("Bot is running...")
+    print("Bot running...")
 
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
