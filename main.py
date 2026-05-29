@@ -89,48 +89,63 @@ def predict_month(user_id):
 
     user_id = int(user_id)
 
-    best_month = None
-    best_score = float("inf")
+    # build sorted points
+    points = []
 
-    for month in SORTED_MONTHS:
+    for month, stats in MONTH_STATS.items():
 
-        stats = MONTH_STATS[month]
+        points.append({
+            "month": month,
+            "min": stats["min"],
+            "max": stats["max"],
+            "median": stats["median"]
+        })
 
-        min_id = stats["min"]
-        max_id = stats["max"]
-        med = stats["median"]
-        count = stats["count"]
+    # sort by median id
+    points.sort(key=lambda x: x["median"])
 
-        # inside month range
-        if min_id <= user_id <= max_id:
+    best = None
+    best_distance = float("inf")
 
-            center_distance = abs(user_id - med)
+    # nearest median search
+    for point in points:
 
-            score = center_distance * 0.4
+        dist = abs(user_id - point["median"])
 
-        else:
+        if dist < best_distance:
 
-            if user_id < min_id:
-                edge_distance = min_id - user_id
-            else:
-                edge_distance = user_id - max_id
+            best_distance = dist
+            best = point
 
-            center_distance = abs(user_id - med)
+    # refinement:
+    # if inside another month range -> prioritize it
 
-            score = (
-                edge_distance * 1.2 +
-                center_distance * 0.3
+    inside_candidates = []
+
+    for point in points:
+
+        if point["min"] <= user_id <= point["max"]:
+
+            range_center = (
+                point["min"] +
+                point["max"]
+            ) / 2
+
+            dist = abs(user_id - range_center)
+
+            inside_candidates.append(
+                (dist, point)
             )
 
-        # dense month bonus
-        score /= (1 + count * 0.08)
+    if inside_candidates:
 
-        if score < best_score:
-            best_score = score
-            best_month = month
+        inside_candidates.sort(
+            key=lambda x: x[0]
+        )
 
-    return best_month
+        best = inside_candidates[0][1]
 
+    return best["month"]
 # =========================
 # START
 # =========================
