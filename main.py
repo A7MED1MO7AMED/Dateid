@@ -48,7 +48,7 @@ def monitor(chat_id):
             log(f"حجم الصفحة: {len(html)} حرف")
 
             found_second_term = "الفصل الدراسي الثاني" in html
-            found_280 = "280" in html
+            found_280 = "140" in html
 
             log(
                 f"نتيجة الفحص: الفصل الدراسي الثاني = {found_second_term} | 280 = {found_280}"
