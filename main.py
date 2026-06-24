@@ -1,152 +1,166 @@
-import json
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
-)
+import requests
+import time
+import threading
+from datetime import datetime
 
-# =========================
-# BOT TOKEN
-# =========================
-TOKEN = "8824897435:AAHYNuoRRTqr0zgavzXIv_oipj8MhL2Lr_s"
+URL = "https://natiga.qalubiaedu.org/student/72962/"
 
-# =========================
-# LOAD RANGE DATASET
-# =========================
-with open("telegram_ranges_dataset.json", "r", encoding="utf-8") as f:
-    DATA = json.load(f)
+BOT_TOKEN = "6892342001:AAHJQhBTjipchtrAZU7b0C6TsFsayY-KQPM"
 
-# =========================
-# SMART MONTH PREDICTION
-# =========================
-def predict_month(user_id):
+monitoring = False
+sent = False
+last_update_id = 0
 
-    user_id = int(user_id)
 
-    best_month = None
-    best_score = float("inf")
+def log(msg):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
-    for item in DATA:
 
-        month = item["month"]
-
-        min_id = item["min"]
-        max_id = item["max"]
-        center = item["center"]
-        count = item["count"]
-
-        # =========================
-        # INSIDE RANGE
-        # =========================
-        if min_id <= user_id <= max_id:
-
-            # distance from center
-            center_distance = abs(user_id - center)
-
-            # strong bonus for being inside
-            score = center_distance * 0.35
-
-        else:
-
-            # distance from nearest edge
-            edge_distance = min(
-                abs(user_id - min_id),
-                abs(user_id - max_id)
-            )
-
-            center_distance = abs(user_id - center)
-
-            score = (
-                edge_distance * 1.0 +
-                center_distance * 0.15
-            )
-
-        # =========================
-        # DENSITY BONUS
-        # =========================
-        score /= (1 + count * 0.03)
-
-        # =========================
-        # BEST MATCH
-        # =========================
-        if score < best_score:
-
-            best_score = score
-            best_month = month
-
-    return best_month
-
-# =========================
-# START COMMAND
-# =========================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    text = (
-        "1Send Telegram IDs separated by spaces or lines.\n\n"
-        "Example:\n"
-        "8374818286\n"
-        "7019795401\n"
-        "6665067360"
+def send_message(chat_id, text):
+    requests.get(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+        params={
+            "chat_id": chat_id,
+            "text": text
+        }
     )
 
-    await update.message.reply_text(text)
 
-# =========================
-# HANDLE IDS
-# =========================
-async def handle_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def monitor(chat_id):
+    global sent, monitoring
 
-    raw_text = update.message.text
-
-    ids = raw_text.split()
-
-    results = []
-
-    for uid in ids:
-
-        if not uid.isdigit():
-
-            results.append(f"{uid} -> Invalid ID")
-            continue
-
+    while monitoring:
         try:
+            log("بدء فحص الصفحة...")
 
-            result = predict_month(uid)
+            response = requests.get(
+                URL,
+                timeout=20,
+                headers={
+                    "User-Agent": "Mozilla/5.0"
+                }
+            )
 
-            results.append(f"{uid} → {result}")
+            log(f"تم جلب الصفحة بنجاح - Status Code: {response.status_code}")
+
+            html = response.text
+
+            log(f"حجم الصفحة: {len(html)} حرف")
+
+            found_second_term = "الفصل الدراسي الثاني" in html
+            found_280 = "280" in html
+
+            log(
+                f"نتيجة الفحص: الفصل الدراسي الثاني = {found_second_term} | 280 = {found_280}"
+            )
+
+            if found_second_term or found_280:
+
+                log("تم العثور على الشرط المطلوب!")
+
+                if not sent:
+
+                    log("جاري إرسال ملف HTML...")
+
+                    requests.post(
+                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument",
+                        data={"chat_id": chat_id},
+                        files={
+                            "document": (
+                                "result.html",
+                                html.encode("utf-8"),
+                                "text/html"
+                            )
+                        }
+                    )
+
+                    log("تم إرسال الملف")
+
+                    send_message(
+                        chat_id,
+                        "🚨 تم العثور على الفصل الدراسي الثاني أو الرقم 280"
+                    )
+
+                    sent = True
+
+            else:
+                log("لم يتم العثور على أي شرط")
+
+            log("انتظار 60 ثانية...\n")
+            time.sleep(60)
 
         except Exception as e:
+            log(f"خطأ أثناء الفحص: {e}")
+            log("انتظار 90 ثانية...\n")
+            time.sleep(90)
 
-            results.append(f"{uid} -> Error")
 
-    final_text = "\n".join(results)
+log("تم تشغيل البرنامج")
 
-    await update.message.reply_text(final_text)
+while True:
+    try:
 
-# =========================
-# MAIN
-# =========================
-def main():
+        updates = requests.get(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates",
+            params={
+                "offset": last_update_id + 1,
+                "timeout": 10
+            }
+        ).json()
 
-    app = ApplicationBuilder().token(TOKEN).build()
+        for update in updates["result"]:
 
-    app.add_handler(
-        CommandHandler("start", start)
-    )
+            last_update_id = update["update_id"]
 
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            handle_ids
-        )
-    )
+            message = update.get("message", {})
+            text = message.get("text", "")
+            chat_id = message.get("chat", {}).get("id")
 
-    print("Bot running...")
+            log(f"رسالة واردة: {text}")
 
-    app.run_polling()
+            if text == "/start":
 
-if __name__ == "__main__":
-    main()
+                if not monitoring:
+
+                    monitoring = True
+                    sent = False
+
+                    threading.Thread(
+                        target=monitor,
+                        args=(chat_id,),
+                        daemon=True
+                    ).start()
+
+                    send_message(
+                        chat_id,
+                        "✅ البوت شغال وبدأ فحص الصفحة كل دقيقة."
+                    )
+
+                    log("تم بدء الفحص")
+
+                else:
+
+                    send_message(
+                        chat_id,
+                        "✅ البوت شغال بالفعل."
+                    )
+
+                    log("تم استلام /start والبوت يعمل بالفعل")
+
+            elif text == "/stop":
+
+                monitoring = False
+
+                send_message(
+                    chat_id,
+                    "⏹️ تم إيقاف الفحص."
+                )
+
+                log("تم إيقاف الفحص")
+
+        time.sleep(2)
+
+    except Exception as e:
+
+        log(f"خطأ في البوت: {e}")
+        time.sleep(5)
